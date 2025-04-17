@@ -7,18 +7,18 @@ on:
 
 jobs:
   read-and-access:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04 # 更新为支持的运行环境
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
-      
-    - name: Set up Python
-      uses: actions/setup-python@v4
+    - name: 检出代码仓库
+      uses: actions/checkout@v4 # 更新到最新版本
+
+    - name: 设置 Python 环境
+      uses: actions/setup-python@v5 # 更新到最新版本
       with:
         python-version: '3.10'
 
-    - name: Install dependencies
+    - name: 安装系统依赖
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -32,65 +32,60 @@ jobs:
           libxdamage1 \
           libxrandr2 \
           libgbm1 \
-          libgtk-3-0   
+          libgtk-3-0 \
+          jq # 显式安装 jq 用于 JSON 解析
         wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
         sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
         rm -rf google-chrome-stable_current_amd64.deb
+
+    - name: 安装 Python 依赖
+      run: |
         cd minekuai
-        python -m ensurepip --upgrade  # 确保 pip 已安装
+        python -m ensurepip --upgrade
         pip install -U pip
-        pip install -r requirements.txt 
-        
+        pip install -r requirements.txt
+
     - name: 签到续费麦块联机
       env:
         MK_TOKENS: ${{ secrets.MK_TOKENS }}
       run: |
         #!/bin/bash
         set -e
-
+        if [ -z "$MK_TOKENS" ]; then
+          echo "❌ MK_TOKENS 秘密变量未设置！"
+          exit 1
+        fi
         IFS=',' read -r -a entries <<< "$MK_TOKENS"
-
         for entry in "${entries[@]}"; do
           IFS=':' read -r user password server <<< "$entry"
           cd minekuai
           echo "🔍 正在尝试登录..."
-          python main.py --username $user --password $password
-          #检查 local.s 是否有内容，如果没有则表示登录失败
-
+          python main.py --username "$user" --password "$password"
           if [ ! -s local.s ]; then
             echo "❌ 登录失败，local.s 文件为空！请检查用户名和密码。"
             continue
           fi
-
           access_token=$(cat local.s)
           user_agent=$(cat u.a)
-
-          # 签到
           echo "✅ 登录成功，开始签到..."
-          sign_response=$(curl -s 'https://api.minekuai.com/system/sign' \
+          sign_response=$(curl -s --retry 3 'https://api.minekuai.com/system/sign' \
             -H "authorization: Bearer $access_token" \
             -H "clientid: 3991ee92fe77fa9672e5eca721151dab" \
             -H "content-language: zh_CN" \
             -H "origin: https://minekuai.com" \
             -H "user-agent: Mozilla/5.0")
-
-          msg_sign=$(echo "$sign_response" | jq -r '.msg')
+          msg_sign=$(echo "$sign_response" | jq -r '.msg // "未知错误"')
           echo "📌 签到结果：$msg_sign"
-
-          # 续费
           echo "🔄 正在尝试续费服务器..."
-          renew_response=$(curl -s -X POST "https://api.minekuai.com/system/mineKuaiSystem/reNewInstance?serverId=$server&days=1" \
+          renew_response=$(curl -s --retry 3 -X POST "https://api.minekuai.com/system/mineKuaiSystem/reNewInstance?serverId=$server&days=1" \
             -H "authorization: Bearer $access_token" \
             -H "clientid: 3991ee92fe77fa9672e5eca721151dab" \
             -H "content-language: zh_CN" \
             -H "origin: https://minekuai.com" \
             -H "user-agent: Mozilla/5.0")
-          
-          rm -rf u.a local.s
-          
-          msg_renew=$(echo "$renew_response" | jq -r '.msg')
+          msg_renew=$(echo "$renew_response" | jq -r '.msg // "未知错误"')
           echo "🔄 续费结果：$msg_renew"
-
+          rm -rf u.a local.s
           echo "✅ 处理完成！"
           echo "---------------------------------------"
         done
